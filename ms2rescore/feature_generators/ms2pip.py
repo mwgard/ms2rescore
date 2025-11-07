@@ -140,6 +140,7 @@ class MS2PIPFeatureGenerator(FeatureGeneratorBase):
             "spectra_angle_norm",
             "spectra_angle_ionb_norm",
             "spectra_angle_iony_norm",
+            "nist_match_factor_norm",
             "spec_pearson",
             "ionb_pearson",
             "iony_pearson",
@@ -296,6 +297,15 @@ class MS2PIPFeatureGenerator(FeatureGeneratorBase):
             prediction_b_unlog = 2**prediction_b - 0.001
             prediction_y_unlog = 2**prediction_y - 0.001
             prediction_all_unlog = 2**prediction_all - 0.001
+            
+            # prepare positive 'log2' values for weighted dot product with
+            # exponents < 0
+            target_b_pos = np.log(target_b_unlog + 1.001)
+            target_y_pos = np.log(target_y_unlog + 1.001)
+            target_all_pos = np.log(target_all_unlog + 1.001)
+            prediction_b_pos = np.log(prediction_b_unlog + 1.001)
+            prediction_y_pos = np.log(prediction_y_unlog + 1.001)
+            prediction_all_pos = np.log(prediction_all_unlog + 1.001)
 
             # Calculate absolute differences
             abs_diff_b = np.abs(target_b - prediction_b)
@@ -341,18 +351,20 @@ class MS2PIPFeatureGenerator(FeatureGeneratorBase):
                 _cosine_similarity(target_all, prediction_all),  # Cos similarity all ions
                 _cosine_similarity(target_b, prediction_b),  # Cos similarity b ions
                 _cosine_similarity(target_y, prediction_y),  # Cos similarity y ions
-                _weighted_dot_product(mz_all, target_all, prediction_all,
-                                      1.0, 0.5, True),  # sokalow weighted dot product all
-                _weighted_dot_product(mz_b, target_b, prediction_b,
-                                      1.0, 0.5, True),  # sokalow weighted dot product b ions
-                _weighted_dot_product(mz_y, target_y, prediction_y,
-                                      1.0, 0.5, True),  # sokalow weighted dot product y ions
+                _weighted_dot_product(mz_all, target_all_pos, prediction_all_pos,
+                                      1.0, 0.5),  # sokalow weighted dot product all
+                _weighted_dot_product(mz_b, target_b_pos, prediction_b_pos,
+                                      1.0, 0.5),  # sokalow weighted dot product b ions
+                _weighted_dot_product(mz_y, target_y_pos, prediction_y_pos,
+                                      1.0, 0.5),  # sokalow weighted dot product y ions
                 _spectrast_match(target_all, prediction_all),  # SpectraST all ions
                 _spectrast_match(target_b, prediction_b),  # SpectraST b ions
                 _spectrast_match(target_y, prediction_y),  # SpectraST y ions
                 _spectra_angle_calc(target_all, prediction_all),  # spectral angle similarity all ions
                 _spectra_angle_calc(target_b, prediction_b),  # spectral angle similarity b ions
                 _spectra_angle_calc(target_y, prediction_y),  # spectral angle similarity y ions
+                _nist_ms_match(mz_all, target_all_pos, prediction_all_pos,
+                               (1.0, 0.0), (0.5, 1.0), 0.0),  # nist match factor (only all ions)
                 # Same features in normal space
                 np.corrcoef(target_all_unlog, prediction_all_unlog)[0][1],  # Pearson all
                 np.corrcoef(target_b_unlog, prediction_b_unlog)[0][1],  # Pearson b
@@ -395,11 +407,11 @@ class MS2PIPFeatureGenerator(FeatureGeneratorBase):
                 _cosine_similarity(target_b_unlog, prediction_b_unlog),  # Cos similarity b ions
                 _cosine_similarity(target_y_unlog, prediction_y_unlog),  # Cos similarity y ions
                 _weighted_dot_product(mz_all, target_all_unlog, prediction_all_unlog,
-                                      1.0, 0.5, True),  # sokalow weighted dot product all
+                                      1.0, 0.5),  # sokalow weighted dot product all
                 _weighted_dot_product(mz_b, target_b_unlog, prediction_b_unlog,
-                                      1.0, 0.5, True),  # sokalow weighted dot product b ions
+                                      1.0, 0.5),  # sokalow weighted dot product b ions
                 _weighted_dot_product(mz_y, target_y_unlog, prediction_y_unlog,
-                                      1.0, 0.5, True),  # sokalow weighted dot product y ions
+                                      1.0, 0.5),  # sokalow weighted dot product y ions
                 _spectrast_match(target_all_unlog, prediction_all_unlog),  # SpectraST all ions
                 _spectrast_match(target_b_unlog, prediction_b_unlog),  # SpectraST b ions
                 _spectrast_match(target_y_unlog, prediction_y_unlog),  # SpectraST y ions
@@ -407,7 +419,7 @@ class MS2PIPFeatureGenerator(FeatureGeneratorBase):
                 _spectra_angle_calc(target_b_unlog, prediction_b_unlog),  # spectral angle similarity b ions
                 _spectra_angle_calc(target_y_unlog, prediction_y_unlog),  # spectral angle similarity y ions
                 _nist_ms_match(mz_all, target_all_unlog, prediction_all_unlog,
-                               (1.0, 0.0), (0.5, 1.0), 0.0),  # nist match factor (only unlog space, only all ions)
+                               (1.0, 0.0), (0.5, 1.0), 0.0),  # nist match factor (only all ions)
             ]
 
         features = dict(
@@ -445,8 +457,7 @@ def _cosine_similarity(x: np.ndarray, y: np.ndarray) -> float:
 
 def _weighted_dot_product(mz: np.ndarray, 
                           intens_exp: np.ndarray, intens_lib: np.ndarray, 
-                          mz_weight: float = 0.0, intens_weight: float = 1.0,
-                          normalize_results: bool = True) -> float:
+                          mz_weight: float = 0.0, intens_weight: float = 1.0) -> float:
     """
     Compute a weighted dot product similarity between experimental and library spectra.
 
@@ -464,9 +475,7 @@ def _weighted_dot_product(mz: np.ndarray,
     intens_weight : float, optional
         exponent applied to intensity weighting (default is 1.0). Set to 0.5 for
         Sokalow weighting.
-    normalize_results : bool, optional
-        whether to normalize the result to the cosine similarity form (default is True).
-
+    
     Returns
     -------
     float
@@ -479,12 +488,9 @@ def _weighted_dot_product(mz: np.ndarray,
     alpha = (intens_exp ** intens_weight) * (mz ** mz_weight)
     beta = (intens_lib ** intens_weight) * (mz ** mz_weight)
 
-    # compute raw dot product
+    # compute raw dot product and normalize
     dot_product = np.dot(alpha, beta)
-
-    # optionally normalize to unit length
-    if normalize_results:
-        dot_product /= (np.linalg.norm(alpha, ord=2) * np.linalg.norm(beta, ord=2))
+    dot_product = dot_product / (np.linalg.norm(alpha, ord=2) * np.linalg.norm(beta, ord=2))
 
     return dot_product
 
@@ -499,8 +505,8 @@ def _spectrast_match(x: np.ndarray, y: np.ndarray) -> float:
     y = np.array(y)
     x_norm = np.sqrt(np.sum(x ** 2))
     y_norm = np.sqrt(np.sum(y ** 2))
-    x /= x_norm
-    y /= y_norm
+    x = x / x_norm
+    y = y / y_norm
 
     # compute SpectraST match factor
     return (np.dot(x, y) ** 2) / (np.sum(x ** 2) * np.sum(y ** 2))
