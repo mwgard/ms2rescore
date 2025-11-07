@@ -131,6 +131,15 @@ class MS2PIPFeatureGenerator(FeatureGeneratorBase):
             "cos_norm",
             "cos_ionb_norm",
             "cos_iony_norm",
+            "weighted_dotprod_norm",
+            "weighted_dotprod_ionb_norm",
+            "weighted_dotprod_iony_norm",
+            "spectrast_norm",
+            "spectrast_ionb_norm",
+            "spectrast_iony_norm",
+            "spectra_angle_norm",
+            "spectra_angle_ionb_norm",
+            "spectra_angle_iony_norm",
             "spec_pearson",
             "ionb_pearson",
             "iony_pearson",
@@ -169,6 +178,15 @@ class MS2PIPFeatureGenerator(FeatureGeneratorBase):
             "cos",
             "cos_ionb",
             "cos_iony",
+            "weighted_dotprod",
+            "weighted_dotprod_ionb",
+            "weighted_dotprod_iony",
+            "spectrast",
+            "spectrast_ionb",
+            "spectrast_iony",
+            "spectra_angle",
+            "spectra_angle_ionb",
+            "spectra_angle_iony",
         ]
 
     def add_features(self, psm_list: PSMList) -> None:
@@ -265,6 +283,10 @@ class MS2PIPFeatureGenerator(FeatureGeneratorBase):
             prediction_b = processing_result.observed_intensity["b"].clip(np.log2(0.001))
             prediction_y = processing_result.observed_intensity["y"].clip(np.log2(0.001))
             prediction_all = np.concatenate([prediction_b, prediction_y])
+            # convert m/z values to arrays
+            mz_b = processing_result.theoretical_mz["b"]
+            mz_y = processing_result.theoretical_mz["y"]
+            mz_all = np.concatenate([mz_b, mz_y])
 
             # Prepare 'unlogged' intensity arrays
             target_b_unlog = 2**target_b - 0.001
@@ -318,6 +340,18 @@ class MS2PIPFeatureGenerator(FeatureGeneratorBase):
                 _cosine_similarity(target_all, prediction_all),  # Cos similarity all ions
                 _cosine_similarity(target_b, prediction_b),  # Cos similarity b ions
                 _cosine_similarity(target_y, prediction_y),  # Cos similarity y ions
+                _weighted_dot_product(mz_all, target_all, prediction_all,
+                                      1.0, 0.5, True),  # sokalow weighted dot product all
+                _weighted_dot_product(mz_b, target_b, prediction_b,
+                                      1.0, 0.5, True),  # sokalow weighted dot product b ions
+                _weighted_dot_product(mz_y, target_y, prediction_y,
+                                      1.0, 0.5, True),  # sokalow weighted dot product y ions
+                _spectrast_match(target_all, prediction_all),  # SpectraST all ions
+                _spectrast_match(target_b, prediction_b),  # SpectraST b ions
+                _spectrast_match(target_y, prediction_y),  # SpectraST y ions
+                _spectra_angle_calc(target_all, prediction_all),  # spectral angle similarity all ions
+                _spectra_angle_calc(target_b, prediction_b),  # spectral angle similarity b ions
+                _spectra_angle_calc(target_y, prediction_y),  # spectral angle similarity y ions
                 # Same features in normal space
                 np.corrcoef(target_all_unlog, prediction_all_unlog)[0][1],  # Pearson all
                 np.corrcoef(target_b_unlog, prediction_b_unlog)[0][1],  # Pearson b
@@ -359,6 +393,18 @@ class MS2PIPFeatureGenerator(FeatureGeneratorBase):
                 _cosine_similarity(target_all_unlog, prediction_all_unlog),  # Cos similarity all
                 _cosine_similarity(target_b_unlog, prediction_b_unlog),  # Cos similarity b ions
                 _cosine_similarity(target_y_unlog, prediction_y_unlog),  # Cos similarity y ions
+                _weighted_dot_product(mz_all, target_all_unlog, prediction_all_unlog,
+                                      1.0, 0.5, True),  # sokalow weighted dot product all
+                _weighted_dot_product(mz_b, target_b_unlog, prediction_b_unlog,
+                                      1.0, 0.5, True),  # sokalow weighted dot product b ions
+                _weighted_dot_product(mz_y, target_y_unlog, prediction_y_unlog,
+                                      1.0, 0.5, True),  # sokalow weighted dot product y ions
+                _spectrast_match(target_all_unlog, prediction_all_unlog),  # SpectraST all ions
+                _spectrast_match(target_b_unlog, prediction_b_unlog),  # SpectraST b ions
+                _spectrast_match(target_y_unlog, prediction_y_unlog),  # SpectraST y ions
+                _spectra_angle_calc(target_all_unlog, prediction_all_unlog),  # spectral angle similarity all ions
+                _spectra_angle_calc(target_b_unlog, prediction_b_unlog),  # spectral angle similarity b ions
+                _spectra_angle_calc(target_y_unlog, prediction_y_unlog),  # spectral angle similarity y ions
             ]
 
         features = dict(
@@ -392,3 +438,101 @@ def _cosine_similarity(x: np.ndarray, y: np.ndarray) -> float:
     x = np.array(x)
     y = np.array(y)
     return np.dot(x, y) / (np.linalg.norm(x, 2) * np.linalg.norm(y, 2))
+
+
+def _weighted_dot_product(mz: np.ndarray, 
+                          intens_exp: np.ndarray, intens_lib: np.ndarray, 
+                          mz_weight: float = 0.0, intens_weight: float = 1.0,
+                          normalize_results: bool = True) -> float:
+    """
+    Compute a weighted dot product similarity between experimental and library spectra.
+
+    Parameters
+    ----------
+    mz : np.ndarray
+        m/z values of the experimental spectrum.
+    intens_exp : np.ndarray
+        intensity values of the experimental spectrum.
+    intens_lib : np.ndarray
+        intensity values of the library spectrum.
+    mz_weight : float, optional
+        exponent applied to m/z weighting (default is 0.0).
+    intens_weight : float, optional
+        exponent applied to intensity weighting (default is 1.0).
+    normalize_results : bool, optional
+        whether to normalize the result to the cosine similarity form (default is True).
+
+    Returns
+    -------
+    float
+        Weighted (optionally normalized) dot product similarity between the spectra.
+    """
+    intens_lib = np.array(intens_lib)
+    intens_exp = np.array(intens_exp)
+    mz = np.array(mz)
+    # compute weighted components
+    alpha = (intens_exp ** intens_weight) * (mz ** mz_weight)
+    beta = (intens_lib ** intens_weight) * (mz ** mz_weight)
+
+    # compute raw dot product
+    dot_product = np.dot(alpha, beta)
+
+    # optionally normalize to unit length
+    if normalize_results:
+        dot_product /= (np.linalg.norm(alpha, ord=2) * np.linalg.norm(beta, ord=2))
+
+    return dot_product
+
+
+def _spectrast_match(x: np.ndarray, y: np.ndarray) -> float:
+    """SpectraST Match Factor
+    Lam, H.; Deutsch, E. W.; Eddes, J. S.; Eng, J. K.; King, N.; Stein, S. E.; 
+    Aebersold, R. Development and Validation of a Spectral Library Searching Method 
+    for Peptide Identification from MS/MS. Proteomics 2007, 7, 655-667.
+    """
+    x = np.array(x)
+    y = np.array(y)
+    x_norm = np.sqrt(np.sum(x ** 2))
+    y_norm = np.sqrt(np.sum(y ** 2))
+    x /= x_norm
+    y /= y_norm
+
+    # compute SpectraST match factor
+    return (np.dot(x, y) ** 2) / (np.sum(x ** 2) * np.sum(y ** 2))
+
+
+def _spectra_angle_calc(exp: np.ndarray, lib: np.ndarray, eps: float = 1e-7) -> float:
+    """
+    Compute the spectral angle similarity between two spectra (Spectral Angle Mapper).
+
+    Parameters
+    ----------
+    exp : np.ndarray
+        Experimental spectrum intensities.
+    lib : np.ndarray
+        Library spectrum intensities.
+    eps : float, optional
+        Small constant to prevent division by zero (default is 1e-7).
+
+    Returns
+    -------
+    float
+        Spectral angle similarity score in [0, 1], where 1 indicates identical spectra.
+    
+    Reference
+    ---------
+    Toprak, U. H.; Gillet, L. C.; Maiolica, A.; Navarro, P.; Leitner, A.; 
+    Aebersold, R. Conserved Peptide Fragmentation as a Benchmarking Tool 
+    for Mass Spectrometers and a Discriminating Feature for Targeted 
+    Proteomics. Molecular & Cellular Proteomics 2014, 13, 2056–2071.
+    https://doi.org/10.1074/mcp.O113.036475
+    """
+    # normalize both spectra to unit length with epsilon safeguard
+    exp_norm = exp / np.sqrt(np.maximum(np.sum(exp ** 2), eps))
+    lib_norm = lib / np.sqrt(np.maximum(np.sum(lib ** 2), eps))
+
+    # compute cosine similarity (clipped for numerical safety)
+    cos_sim = np.clip(np.dot(exp_norm, lib_norm), -1.0, 1.0)
+
+    # convert to spectral angle similarity as in Toprak et al. (2014)
+    return 1 - (2 * np.arccos(cos_sim) / np.pi)
