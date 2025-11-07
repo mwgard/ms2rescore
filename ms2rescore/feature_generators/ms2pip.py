@@ -187,6 +187,7 @@ class MS2PIPFeatureGenerator(FeatureGeneratorBase):
             "spectra_angle",
             "spectra_angle_ionb",
             "spectra_angle_iony",
+            "nist_match_factor"
         ]
 
     def add_features(self, psm_list: PSMList) -> None:
@@ -405,6 +406,8 @@ class MS2PIPFeatureGenerator(FeatureGeneratorBase):
                 _spectra_angle_calc(target_all_unlog, prediction_all_unlog),  # spectral angle similarity all ions
                 _spectra_angle_calc(target_b_unlog, prediction_b_unlog),  # spectral angle similarity b ions
                 _spectra_angle_calc(target_y_unlog, prediction_y_unlog),  # spectral angle similarity y ions
+                _nist_ms_match(mz_all, target_all_unlog, prediction_all_unlog,
+                               (1.0, 0.0), (0.5, 1.0), 0.0),  # nist match factor (only unlog space, only all ions)
             ]
 
         features = dict(
@@ -456,9 +459,11 @@ def _weighted_dot_product(mz: np.ndarray,
     intens_lib : np.ndarray
         intensity values of the library spectrum.
     mz_weight : float, optional
-        exponent applied to m/z weighting (default is 0.0).
+        exponent applied to m/z weighting (default is 0.0). Set to 1.0 for 
+        Sokalow weighting.
     intens_weight : float, optional
-        exponent applied to intensity weighting (default is 1.0).
+        exponent applied to intensity weighting (default is 1.0). Set to 0.5 for
+        Sokalow weighting.
     normalize_results : bool, optional
         whether to normalize the result to the cosine similarity form (default is True).
 
@@ -505,6 +510,14 @@ def _spectra_angle_calc(exp: np.ndarray, lib: np.ndarray, eps: float = 1e-7) -> 
     """
     Compute the spectral angle similarity between two spectra (Spectral Angle Mapper).
 
+    References
+    ----------
+    Toprak, U. H.; Gillet, L. C.; Maiolica, A.; Navarro, P.; Leitner, A.; 
+    Aebersold, R. Conserved Peptide Fragmentation as a Benchmarking Tool 
+    for Mass Spectrometers and a Discriminating Feature for Targeted 
+    Proteomics. Molecular & Cellular Proteomics 2014, 13, 2056–2071.
+    https://doi.org/10.1074/mcp.O113.036475
+
     Parameters
     ----------
     exp : np.ndarray
@@ -518,14 +531,6 @@ def _spectra_angle_calc(exp: np.ndarray, lib: np.ndarray, eps: float = 1e-7) -> 
     -------
     float
         Spectral angle similarity score in [0, 1], where 1 indicates identical spectra.
-    
-    Reference
-    ---------
-    Toprak, U. H.; Gillet, L. C.; Maiolica, A.; Navarro, P.; Leitner, A.; 
-    Aebersold, R. Conserved Peptide Fragmentation as a Benchmarking Tool 
-    for Mass Spectrometers and a Discriminating Feature for Targeted 
-    Proteomics. Molecular & Cellular Proteomics 2014, 13, 2056–2071.
-    https://doi.org/10.1074/mcp.O113.036475
     """
     # normalize both spectra to unit length with epsilon safeguard
     exp_norm = exp / np.sqrt(np.maximum(np.sum(exp ** 2), eps))
@@ -536,3 +541,98 @@ def _spectra_angle_calc(exp: np.ndarray, lib: np.ndarray, eps: float = 1e-7) -> 
 
     # convert to spectral angle similarity as in Toprak et al. (2014)
     return 1 - (2 * np.arccos(cos_sim) / np.pi)
+
+
+def _nist_weights(mz: np.ndarray, intens: np.ndarray, mz_weight: float, intens_weight: float) -> np.ndarray:
+    """
+    Apply NIST-style weighting to a spectrum with a shared m/z axis.
+
+    Parameters
+    ----------
+    mz : np.ndarray
+        Shared m/z values.
+    intens : np.ndarray
+        Intensity values corresponding to m/z.
+    mz_weight : float
+        Exponent weight applied to m/z values.
+    intens_weight : float
+        Exponent weight applied to intensity values.
+
+    Returns
+    -------
+    np.ndarray
+        Weighted intensities for NIST dot product and RPP computations.
+    """
+    return (intens ** intens_weight) * (mz ** mz_weight)
+
+
+def _nist_ms_match(mz: np.ndarray, intens_exp: np.ndarray, intens_lib: np.ndarray, 
+                   mz_weights: tuple[float, float] = (1.0, 0.0),
+                   intens_weights: tuple[float, float] = (0.5, 1.0),
+                   noise_thres: float = 0.0) -> float:
+    """
+    Compute the NIST MS² match factor between experimental and library spectra.
+
+    References
+    ----------
+    Stein, S. E.; Scott, D. R. (1994). Optimization and testing of mass spectral
+    library search algorithms for compound identification.
+    Journal of the American Society for Mass Spectrometry, 5, 859–866.
+
+    Parameters
+    ----------
+    mz : np.ndarray
+        Shared m/z axis for both spectra (unsorted).
+    intens_exp : np.ndarray
+        Experimental spectrum intensities aligned to m/z.
+    intens_lib : np.ndarray
+        Library spectrum intensities aligned to m/z.
+    mz_weights : tuple[float, float], optional
+        Exponential weights for m/z in (DPC, RPP) components (default is (1.0, 0.0)).
+    intens_weights : tuple[float, float], optional
+        Exponential weights for intensity in (DPC, RPP) components (default is (0.5, 1.0)).
+    noise_thres : float, optional
+        Threshold below which peaks are treated as noise (default is 0.0).
+
+    Returns
+    -------
+    float
+        NIST MS² match factor (0-1 scale), combining DPC and RPP similarity components.
+    """
+    # sort all arrays by increasing m/z
+    sort_idx = np.argsort(mz)
+    mz = mz[sort_idx]
+    intens_exp = intens_exp[sort_idx]
+    intens_lib = intens_lib[sort_idx]
+
+    # weighted dot product cosine (DPC)
+    w_exp_dpc = _nist_weights(mz, intens_exp, mz_weights[0], intens_weights[0])
+    w_lib_dpc = _nist_weights(mz, intens_lib, mz_weights[0], intens_weights[0])
+
+    numerator = np.dot(w_exp_dpc, w_lib_dpc) ** 2
+    denominator = np.sum(w_exp_dpc ** 2) * np.sum(w_lib_dpc ** 2)
+    dpc = numerator / denominator if denominator > 0 else 0.0
+
+    # weighted ratio of peak pairs (RPP)
+    w_exp_rpp = _nist_weights(mz, intens_exp, mz_weights[1], intens_weights[1])
+    w_lib_rpp = _nist_weights(mz, intens_lib, mz_weights[1], intens_weights[1])
+
+    # identify non-noise peaks
+    valid_mask = (intens_exp > noise_thres) & (intens_lib > noise_thres)
+    idx = np.nonzero(valid_mask)[0]
+
+    if idx.size > 1:
+        n_exp = np.count_nonzero(intens_exp > noise_thres)
+
+        # compute RPP ratios between consecutive common peaks
+        ratios = ((w_lib_rpp[idx[1:n_exp]] / w_lib_rpp[idx[0: n_exp - 1]]) * 
+                  (w_exp_rpp[idx[0: n_exp - 1]] / w_exp_rpp[idx[1:n_exp]]))
+        signs = np.where(ratios < 1, 1, -1)
+        rpp = np.sum(ratios ** signs) / n_exp
+
+        # final NIST match factor
+        match_factor = (n_exp * dpc + (idx.size * rpp)) / (n_exp + idx.size)
+    else:
+        match_factor = 0.0
+
+    return match_factor
