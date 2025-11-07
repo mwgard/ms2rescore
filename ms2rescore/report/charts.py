@@ -51,7 +51,10 @@ class _ECDF:
         return self.y[tind]
 
 
-def score_histogram(psms: Union[PSMList, pd.DataFrame]) -> go.Figure:
+def score_histogram(psms: Union[PSMList, pd.DataFrame],
+                    score_var: str='score',
+                    fdr_threshold: float=0.01,
+                    log_score: bool=False) -> go.Figure:
     """
     Plot histogram of scores for a single PSM dataset.
 
@@ -60,30 +63,52 @@ def score_histogram(psms: Union[PSMList, pd.DataFrame]) -> go.Figure:
     psms
         PSMs to plot, as :py:class:`psm_utils.PSMList` or :py:class:`pandas.DataFrame` generated
         with :py:meth:`psm_utils.PSMList.to_dataframe`.
+    score_var: str, optional
+        The score variable to plot. Must be a key in the `psms` or in its
+        rescoring_features attribute.
+    fdr_threshold: float, optional
+        False discovery rate threshold for identifying the score cut-off. The
+        default is 0.01.
+    log_score: bool, optional
+        Whether to take the -log10 of the score for plotting purposes. The 
+        default is False.
 
     """
     if isinstance(psms, PSMList):
         psm_df = psms.to_dataframe()
+        if score_var not in ['score', 'qvalue', 'pep']:
+            feature_df = pd.DataFrame(list(psms['rescoring_features']))
+            if score_var not in feature_df.columns:
+                allowed_values = ['score', 'qvalue', 'pep'] + list(feature_df.columns)
+                raise ValueError(f"Invalid `score_var`: {score_var}. "
+                                 f"Allowable values are: {allowed_values}")
+            psm_df = pd.concat([psm_df, feature_df[[score_var]]], axis=1)
     else:
         psm_df = psms
+    if log_score:
+        psm_df[score_var] = -1 * np.log10(psm_df[score_var])
+        score_label = f'-log10({score_var})'
+    else:
+        score_label = score_var
 
     is_decoy = psm_df["is_decoy"].map({True: "decoy", False: "target"})
 
     fig = px.histogram(
         psm_df,
-        x="score",
+        x=score_var,
         color=is_decoy,
         barmode="overlay",
         histnorm="",
-        labels={"is_decoy": "PSM type", "False": "target", "True": "decoy"},
+        labels={"is_decoy": "PSM type", "False": "target", "True": "decoy",
+                "x": score_label},
         opacity=0.5,
     )
 
     # Get score thresholds
-    if all(psm_df["qvalue"]):
+    if all(~np.isnan(psm_df["qvalue"])):
         score_threshold = (
-            psm_df[psm_df["qvalue"] <= 0.01]
-            .sort_values("qvalue", ascending=False)["qvalue"]
+            psm_df[psm_df["qvalue"] <= fdr_threshold]
+            .sort_values("qvalue", ascending=False)[score_var]
             .iloc[0]
         )
         fig.add_vline(x=score_threshold, line_dash="dash", line_color="black")
@@ -507,32 +532,69 @@ def ms2pip_correlation(
     features: pd.DataFrame,
     is_decoy: Union[pd.Series, np.ndarray],
     qvalue: Union[pd.Series, np.ndarray],
+    fdr_threshold: float=0.01,
+    feature_name: str='spec_pearson_norm',
+    feature_label: str=None,
+    plot_decoys: bool=False
 ) -> go.Figure:
     """
     Plot MS²PIP correlation for target PSMs with q-value <= 0.01.
 
     Parameters
     ----------
-    features
+    features: pd.DataFrame
         Data frame with features. Must contain the column ``spec_pearson_norm``.
-    is_decoy
+    is_decoy pd.Series | np.ndarray
         Boolean array indicating whether each PSM is a decoy.
-    qvalue
+    qvalue: pd.Series | np.ndarray
         Array of q-values for each PSM.
-
+    fdr_threshold: float, optional
+        False discovery rate threshold for including results in the plot.
+        The default is 0.01.
+    feature_name: str, optional
+        Name of the correlation metric to plot. Value must be a column in 
+        `features`. The default is 'spec_pearson_norm'.
+    feature_label: str, optional
+        X-axis label for the feature. The default is None to use `feature_name`
+        as the x-axis label.
+    plot_decoys: bool, optional
+        Whether to plot decoys in the histogram or not. The default is False.
     """
-    data = features["spec_pearson_norm"][(qvalue < 0.01) & (~is_decoy)]
-    fig = px.histogram(
-        x=data,
-        labels={"x": "Pearson correlation"},
-    )
+    if feature_name not in features.columns:
+        raise ValueError(f"Invalid `feature_name`: {feature_name}. "
+                         f"Allowed values: {list(features.columns)}")
+    if feature_label is None:
+        if feature_name == 'spec_pearson_norm':
+            feature_label = 'Pearson correlation'
+        else:
+            feature_label = feature_name
+    if plot_decoys:
+        data = features[feature_name][(qvalue < fdr_threshold)]
+        fig = px.histogram(
+            x=data,
+            color=is_decoy,
+            barmode="overlay",
+            histnorm="",
+            labels={"x": feature_label, 
+                    "is_decoy": "PSM type", 
+                    "False": "target", 
+                    "True": "decoy"},
+            opacity=0.5,
+        )
+    else:
+        data = features[feature_name][(qvalue < fdr_threshold) & (~is_decoy)]
+        median_corr = data.median()
+        fig = px.histogram(
+            x=data,
+            labels={"x": feature_label},
+        )
     # Draw vertical line at median
     fig.add_vline(
         x=data.median(),
         line_width=3,
         line_dash="dash",
         line_color="red",
-        annotation_text=f"Median: {data.median():.2f}",
+        annotation_text=f"Median: {median_corr:.3f}",
         annotation_position="top left",
     )
     return fig
