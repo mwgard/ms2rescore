@@ -255,6 +255,11 @@
                     "description": "Directory containing MS²PIP models",
                     "oneOf": [{ "type": "string" }, { "type": "null" }],
                     "default": null
+                },
+                "keep_predictions": {
+                    "description": "Keep MS²PIP-predicted spectra on the feature generator (`predictions` attribute) after feature calculation",
+                    "type": "boolean",
+                    "default": false
                 }
             }
         },

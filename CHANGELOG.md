@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ms2pip` feature generator: spectral angle, SpectraST, weighted (Sokolow) dot product, and
+  NIST match factor features (`spectral_angle*`, `spectrast*`, `weighted_dotprod*`,
+  `nist_match_factor*`), computed in ms2rescore-rs (theoretical m/z values are passed for the
+  m/z-weighted features).
+- `ms2pip` feature generator: `keep_predictions` option (default `false`) to keep the
+  MS²PIP-predicted spectra in `MS2PIPFeatureGenerator.predictions`, keyed by peptidoform.
+- `report.charts.score_histogram`: `score_var`, `fdr_threshold`, and `log_score` options;
+  `report.charts.ms2pip_correlation`: `fdr_threshold`, `feature_name`, `feature_label`, and
+  `plot_decoys` options.
+
 - `ms2` feature generator: `add_mod_info` option (default `false`) adding modification-aware
   features: `n_mods`, modification-specific neutral loss and diagnostic ion intensity ratios
   (`mod_loss_n_matched`, `mod_loss_intensity_ratio`, `precursor_mod_loss_ratio`,

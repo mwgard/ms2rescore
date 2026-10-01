@@ -56,6 +56,7 @@ class MS2PIPFeatureGenerator(FeatureGeneratorBase):
         model: str = "HCD",
         model_dir: str | None = None,
         processes: int = 1,
+        keep_predictions: bool = False,
         **kwargs,
     ) -> None:
         """
@@ -69,17 +70,28 @@ class MS2PIPFeatureGenerator(FeatureGeneratorBase):
             Directory containing MS²PIP models. Defaults to :py:const:`None` (use MS²PIP default).
         processes : int, optional
             Number of processes to use. Defaults to 1.
+        keep_predictions : bool, optional
+            Keep the MS²PIP-predicted spectra in :py:attr:`predictions` after feature
+            calculation. Defaults to :py:const:`False`.
 
         Attributes
         ----------
         feature_names: list[str]
             Names of the features that will be added to the PSMs.
+        predictions: dict[str, dict[str, dict[str, numpy.ndarray]]]
+            Predicted spectra (if ``keep_predictions`` is set), keyed by peptidoform (ProForma
+            string including charge), with ``"theoretical_mz"`` and ``"predicted_intensity"``
+            dictionaries per ion type, as in :py:class:`ms2pip.result.ProcessingResult`
+            (intensities as log2(TIC-normalized intensity + 0.001)). Predictions accumulate over
+            calls of :py:meth:`add_features`.
 
         """
         super().__init__(*args, **kwargs)
         self.model = model
         self.model_dir = model_dir
         self.processes = processes
+        self.keep_predictions = keep_predictions
+        self.predictions: dict[str, dict] = {}
 
     @property
     def feature_names(self):
@@ -117,6 +129,16 @@ class MS2PIPFeatureGenerator(FeatureGeneratorBase):
             "cos_norm",
             "cos_ionb_norm",
             "cos_iony_norm",
+            "weighted_dotprod_norm",
+            "weighted_dotprod_ionb_norm",
+            "weighted_dotprod_iony_norm",
+            "spectrast_norm",
+            "spectrast_ionb_norm",
+            "spectrast_iony_norm",
+            "spectral_angle_norm",
+            "spectral_angle_ionb_norm",
+            "spectral_angle_iony_norm",
+            "nist_match_factor_norm",
             "spec_pearson",
             "ionb_pearson",
             "iony_pearson",
@@ -155,6 +177,16 @@ class MS2PIPFeatureGenerator(FeatureGeneratorBase):
             "cos",
             "cos_ionb",
             "cos_iony",
+            "weighted_dotprod",
+            "weighted_dotprod_ionb",
+            "weighted_dotprod_iony",
+            "spectrast",
+            "spectrast_ionb",
+            "spectrast_iony",
+            "spectral_angle",
+            "spectral_angle_ionb",
+            "spectral_angle_iony",
+            "nist_match_factor",
         ]
 
     def add_features(self, psm_list: PSMList) -> None:
@@ -194,8 +226,15 @@ class MS2PIPFeatureGenerator(FeatureGeneratorBase):
         pred_y = []
         obs_b = []
         obs_y = []
+        mz_b = []
+        mz_y = []
 
         for r in ms2pip_results:
+            if self.keep_predictions and r.predicted_intensity is not None:
+                self.predictions[str(psm_list[r.psm_index].peptidoform)] = {
+                    "theoretical_mz": r.theoretical_mz,
+                    "predicted_intensity": r.predicted_intensity,
+                }
             if r.observed_intensity is None or r.predicted_intensity is None:
                 continue
             idx.append(r.psm_index)
@@ -203,8 +242,17 @@ class MS2PIPFeatureGenerator(FeatureGeneratorBase):
             pred_y.append(r.predicted_intensity["y"])
             obs_b.append(r.observed_intensity["b"])
             obs_y.append(r.observed_intensity["y"])
+            theoretical_mz = getattr(r, "theoretical_mz", None) or {}
+            mz_b.append(theoretical_mz.get("b"))
+            mz_y.append(theoretical_mz.get("y"))
 
-        results = ms2pip_features_from_prediction_peak_arrays(idx, pred_b, pred_y, obs_b, obs_y)
+        # m/z-weighted features (weighted dot product, NIST match factor) need theoretical m/z
+        mz_kwargs = {}
+        if idx and all(m is not None for m in mz_b + mz_y):
+            mz_kwargs = {"theoretical_mz_b": mz_b, "theoretical_mz_y": mz_y}
+        results = ms2pip_features_from_prediction_peak_arrays(
+            idx, pred_b, pred_y, obs_b, obs_y, **mz_kwargs
+        )
 
         for psm_index, feats in results:
             if feats:

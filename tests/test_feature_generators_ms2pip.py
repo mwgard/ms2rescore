@@ -68,3 +68,62 @@ def test_ms2pip_feature_generator_requires_preloaded_spectra(monkeypatch):
 
     with pytest.raises(FeatureGeneratorException, match="preloaded on `psm.spectrum`"):
         MS2PIPFeatureGenerator().add_features(psm_list)
+
+
+def _fake_result(with_mz: bool = True):
+    return SimpleNamespace(
+        psm_index=0,
+        theoretical_mz=(
+            {"b": np.array([98.06, 227.10]), "y": np.array([148.06, 263.09])} if with_mz else None
+        ),
+        predicted_intensity={"b": np.log2(np.array([0.1, 0.2]) + 0.001),
+                             "y": np.log2(np.array([0.3, 0.4]) + 0.001)},
+        observed_intensity={"b": np.log2(np.array([0.15, 0.1]) + 0.001),
+                            "y": np.log2(np.array([0.35, 0.4]) + 0.001)},
+    )
+
+
+def test_ms2pip_feature_generator_adds_similarity_features(monkeypatch):
+    psm_list = _make_psm_list()
+    monkeypatch.setattr(
+        "ms2rescore.feature_generators.ms2pip.correlate", lambda psms, **kwargs: [_fake_result()]
+    )
+    feature_generator = MS2PIPFeatureGenerator()
+    feature_generator.add_features(psm_list)
+    features = psm_list[0].rescoring_features
+    for name in ["spectral_angle", "spectrast", "weighted_dotprod", "nist_match_factor"]:
+        assert name in features and f"{name}_norm" in features
+        assert 0 <= features[name] <= 1
+    assert set(features) == set(feature_generator.feature_names)
+
+
+def test_ms2pip_feature_generator_without_theoretical_mz(monkeypatch):
+    psm_list = _make_psm_list()
+    monkeypatch.setattr(
+        "ms2rescore.feature_generators.ms2pip.correlate",
+        lambda psms, **kwargs: [_fake_result(with_mz=False)],
+    )
+    MS2PIPFeatureGenerator().add_features(psm_list)
+    features = psm_list[0].rescoring_features
+    assert "spectral_angle" in features
+    assert "nist_match_factor" not in features
+
+
+@pytest.mark.parametrize("keep", [True, False])
+def test_ms2pip_feature_generator_keep_predictions(monkeypatch, keep):
+    psm_list = _make_psm_list()
+    result = _fake_result()
+    monkeypatch.setattr(
+        "ms2rescore.feature_generators.ms2pip.correlate", lambda psms, **kwargs: [result]
+    )
+    feature_generator = MS2PIPFeatureGenerator(keep_predictions=keep)
+    feature_generator.add_features(psm_list)
+    if keep:
+        assert list(feature_generator.predictions) == ["PEPTIDE/2"]
+        prediction = feature_generator.predictions["PEPTIDE/2"]
+        np.testing.assert_array_equal(prediction["theoretical_mz"]["b"], result.theoretical_mz["b"])
+        np.testing.assert_array_equal(
+            prediction["predicted_intensity"]["y"], result.predicted_intensity["y"]
+        )
+    else:
+        assert feature_generator.predictions == {}
